@@ -1,19 +1,28 @@
+import { withRequestId } from '../_lib/with-request-id'
 import { NextRequest, NextResponse } from 'next/server'
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
 import { logger } from '@/lib/logger'
+import { buildDashboardSummary } from '../_lib/aggregations'
+import { withCompression } from '../_lib/with-compression'
+import { errorResponse } from '../_lib/errors'
+import { normalizeCurrencyAmount } from '../_lib/amounts'
 
-export async function GET(request: NextRequest) {
+async function GETHandler(request: NextRequest) {
+  const requestId = request.headers.get('x-request-id')
+
   try {
-    // Verify auth
-    const authToken = request.headers.get('authorization')?.replace('Bearer ', '')
-    if (!authToken) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    const authToken = request.headers
+      .get('authorization')
+      ?.replace('Bearer ', '')
 
-    const claims = await verifyAuthToken(authToken)
+    const claims = await verifyAuthToken(authToken || '')
     if (!claims) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 401 })
+      return withCompression(
+        request,
+        errorResponse('UNAUTHORIZED', 'Unauthorized', undefined, 401, requestId),
+      )
     }
 
     const user = await prisma.user.findUnique({
@@ -21,82 +30,89 @@ export async function GET(request: NextRequest) {
     })
 
     if (!user) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      return withCompression(
+        request,
+        errorResponse('NOT_FOUND', 'User not found', undefined, 404, requestId),
+      )
     }
 
-    // Calculate date ranges
     const now = new Date()
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-    const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1)
 
-    // Run all queries in parallel
-    const [
-      totalInvoices,
-      paidInvoices,
-      pendingInvoices,
-      overdueInvoices,
-      totalEarnings,
-      monthlyEarnings,
-      lastMonthEarnings,
-      bankAccountsCount,
-    ] = await Promise.all([
-      // Total invoices
-      prisma.invoice.count({ where: { userId: user.id } }),
-      // Paid invoices
-      prisma.invoice.count({ where: { userId: user.id, status: 'paid' } }),
-      // Pending invoices
-      prisma.invoice.count({ where: { userId: user.id, status: 'pending' } }),
-      // Overdue invoices
-      prisma.invoice.count({
-        where: {
-          userId: user.id,
-          status: 'pending',
-          dueDate: { lt: now },
-        },
-      }),
-      // Total earnings (all time)
-      prisma.invoice.aggregate({
-        where: { userId: user.id, status: 'paid' },
-        _sum: { amount: true },
-      }),
-      // This month earnings
-      prisma.invoice.aggregate({
-        where: {
-          userId: user.id,
-          status: 'paid',
-          paidAt: { gte: startOfMonth },
-        },
-        _sum: { amount: true },
-      }),
-      // Last month earnings
-      prisma.invoice.aggregate({
-        where: {
-          userId: user.id,
-          status: 'paid',
-          paidAt: { gte: startOfLastMonth, lt: startOfMonth },
-        },
-        _sum: { amount: true },
-      }),
-      // Bank accounts count
-      prisma.bankAccount.count({ where: { userId: user.id } }),
+    const sparklineEnd = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() + 1,
+      ),
+    )
+
+    const sparklineStart = new Date(sparklineEnd)
+    sparklineStart.setUTCDate(sparklineStart.getUTCDate() - 14)
+
+    const [dashboard, sparklineRows] = await Promise.all([
+      buildDashboardSummary(user.id, now),
+      prisma.$queryRaw<Array<{ day: Date; amount: unknown }>>(Prisma.sql`
+        SELECT DATE_TRUNC('day', "createdAt") AS day,
+               COALESCE(SUM(amount), 0) AS amount
+        FROM "Transaction"
+        WHERE "userId" = ${user.id}
+          AND type = 'payment'
+          AND status = 'completed'
+          AND "createdAt" >= ${sparklineStart}
+          AND "createdAt" < ${sparklineEnd}
+        GROUP BY day
+        ORDER BY day ASC
+      `),
     ])
 
-    return NextResponse.json({
-      invoices: {
-        total: totalInvoices,
-        paid: paidInvoices,
-        pending: pendingInvoices,
-        overdue: overdueInvoices,
-      },
-      earnings: {
-        total: totalEarnings._sum.amount?.toNumber() || 0,
-        thisMonth: monthlyEarnings._sum.amount?.toNumber() || 0,
-        lastMonth: lastMonthEarnings._sum.amount?.toNumber() || 0,
-      },
-      bankAccounts: bankAccountsCount,
+    logger.info(
+      { userId: user.id, queryCount: dashboard.queryCount + 1 },
+      'routes-b dashboard query profile',
+    )
+
+    const sparklineByDate = new Map(
+      sparklineRows.map(row => [
+        row.day.toISOString().slice(0, 10),
+        normalizeCurrencyAmount(row.amount),
+      ]),
+    )
+
+    const sparklinePoints = Array.from({ length: 14 }, (_, index) => {
+      const date = new Date(sparklineStart)
+      date.setUTCDate(sparklineStart.getUTCDate() + index)
+
+      const key = date.toISOString().slice(0, 10)
+
+      return {
+        date: key,
+        amount: sparklineByDate.get(key) ?? 0,
+      }
     })
+
+    return withCompression(
+      request,
+      NextResponse.json({
+        summary: dashboard.summary,
+        sparkline: {
+          days: 14,
+          points: sparklinePoints,
+        },
+      }),
+    )
   } catch (error) {
-    logger.error({ err: error }, 'Dashboard error')
-    return NextResponse.json({ error: 'Failed to get dashboard' }, { status: 500 })
+    logger.error({ err: error }, 'Routes B dashboard GET error')
+
+    return withCompression(
+      request,
+      errorResponse(
+        'INTERNAL',
+        'Failed to fetch dashboard data',
+        undefined,
+        500,
+        requestId,
+      ),
+    )
   }
 }
+
+export const GET = withRequestId(GETHandler)
