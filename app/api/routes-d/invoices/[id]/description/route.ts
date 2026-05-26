@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
+import { logger } from '@/lib/logger'
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    // verify auth
+    const { id } = await params
     const authToken = request.headers.get('authorization')?.replace('Bearer ', '')
     const claims = await verifyAuthToken(authToken || '')
 
@@ -16,18 +17,23 @@ export async function PATCH(
     }
 
     const user = await prisma.user.findUnique({
-      where: { privyId: claims.userId }
+      where: { privyId: claims.userId },
+      select: { id: true },
     })
 
     if (!user) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // get request body
-    const body = await request.json()
+    let body: { description?: unknown }
+    try {
+      body = await request.json()
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
+    }
+
     const { description } = body
 
-    // validation: description required
     if (!description || typeof description !== 'string' || description.trim() === '') {
       return NextResponse.json(
         { error: 'Description is required and must be a non-empty string' },
@@ -43,21 +49,23 @@ export async function PATCH(
       )
     }
 
-    // find invoice
     const invoice = await prisma.invoice.findUnique({
-      where: { id: params.id }
+      where: { id },
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+      },
     })
 
     if (!invoice) {
       return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
     }
 
-    // ownership check
     if (invoice.userId !== user.id) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    // status check
     if (invoice.status !== 'pending') {
       return NextResponse.json(
         { error: 'Only pending invoices can be updated' },
@@ -66,24 +74,24 @@ export async function PATCH(
     }
 
     const updatedInvoice = await prisma.invoice.update({
-      where: { id: params.id },
+      where: { id },
       data: {
-        description: description.trim()
+        description: description.trim(),
       },
       select: {
         id: true,
         invoiceNumber: true,
         description: true,
-        updatedAt: true
-      }
+        updatedAt: true,
+      },
     })
 
     return NextResponse.json(updatedInvoice, { status: 200 })
 
   } catch (error) {
-    console.error('PATCH /invoices/[id]/description error:', error)
+    logger.error({ err: error }, 'PATCH /api/routes-d/invoices/[id]/description error')
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Internal Server Error' },
       { status: 500 }
     )
   }
