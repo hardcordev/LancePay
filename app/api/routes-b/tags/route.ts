@@ -13,7 +13,8 @@ registerRoute({
   method: 'GET',
   path: '/tags',
   summary: 'List tags',
-  description: 'Get all tags for the authenticated user with invoice counts.',
+  description:
+    'Get all tags for the authenticated user with invoice counts.',
   responseSchema: z.object({
     tags: z.array(
       z.object({
@@ -32,10 +33,13 @@ registerRoute({
   method: 'POST',
   path: '/tags',
   summary: 'Create tag',
-  description: 'Create a new tag for organizing invoices.',
+  description: 'Create a tag for organizing invoices.',
   requestSchema: z.object({
     name: z.string().min(1).max(50),
-    color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default('#6366f1'),
+    color: z
+      .string()
+      .regex(/^#[0-9A-Fa-f]{6}$/)
+      .default('#6366f1'),
   }),
   responseSchema: z.object({
     id: z.string(),
@@ -48,16 +52,23 @@ registerRoute({
 
 /* ---------------- AUTH ---------------- */
 
-async function getAuthenticatedUser(request: NextRequest) {
+async function getAuthenticatedUser(
+  request: NextRequest
+) {
   const authToken = request.headers
     .get('authorization')
     ?.replace('Bearer ', '')
 
-  const claims = await verifyAuthToken(authToken || '')
+  const claims = await verifyAuthToken(
+    authToken || ''
+  )
+
   if (!claims) return null
 
   return prisma.user.findUnique({
-    where: { privyId: claims.userId },
+    where: {
+      privyId: claims.userId,
+    },
   })
 }
 
@@ -67,14 +78,27 @@ async function GETHandler(request: NextRequest) {
   const user = await getAuthenticatedUser(request)
 
   if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    return NextResponse.json(
+      { error: 'Unauthorized' },
+      { status: 401 }
+    )
   }
 
   const tags = await prisma.tag.findMany({
-    where: { userId: user.id },
-    orderBy: { name: 'asc' },
+    where: {
+      userId: user.id,
+    },
+
+    orderBy: {
+      name: 'asc',
+    },
+
     include: {
-      _count: { select: { invoiceTags: true } },
+      _count: {
+        select: {
+          invoiceTags: true,
+        },
+      },
     },
   })
 
@@ -95,10 +119,16 @@ async function POSTHandler(request: NextRequest) {
   const user = await getAuthenticatedUser(request)
 
   if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    return NextResponse.json(
+      { error: 'Unauthorized' },
+      { status: 401 }
+    )
   }
 
-  let body: { name?: unknown; color?: unknown }
+  let body: {
+    name?: unknown
+    color?: unknown
+  }
 
   try {
     body = await request.json()
@@ -109,9 +139,15 @@ async function POSTHandler(request: NextRequest) {
     )
   }
 
-  const name = typeof body.name === 'string' ? body.name.trim() : ''
+  const name =
+    typeof body.name === 'string'
+      ? body.name.trim()
+      : ''
+
   const color =
-    typeof body.color === 'string' ? body.color : '#6366f1'
+    typeof body.color === 'string'
+      ? body.color
+      : '#6366f1'
 
   if (!name) {
     return NextResponse.json(
@@ -122,7 +158,10 @@ async function POSTHandler(request: NextRequest) {
 
   if (name.length > 50) {
     return NextResponse.json(
-      { error: 'Tag name must be at most 50 characters' },
+      {
+        error:
+          'Tag name must be at most 50 characters',
+      },
       { status: 400 }
     )
   }
@@ -134,15 +173,18 @@ async function POSTHandler(request: NextRequest) {
     )
   }
 
-  const existingTag = await prisma.tag.findUnique({
+  const existing = await prisma.tag.findUnique({
     where: {
-      userId_name: { userId: user.id, name },
+      userId_name: {
+        userId: user.id,
+        name,
+      },
     },
   })
 
-  if (existingTag) {
+  if (existing) {
     return NextResponse.json(
-      { error: 'Tag with this name already exists' },
+      { error: 'Tag already exists' },
       { status: 409 }
     )
   }
@@ -153,8 +195,13 @@ async function POSTHandler(request: NextRequest) {
       name,
       color,
     },
+
     include: {
-      _count: { select: { invoiceTags: true } },
+      _count: {
+        select: {
+          invoiceTags: true,
+        },
+      },
     },
   })
 
