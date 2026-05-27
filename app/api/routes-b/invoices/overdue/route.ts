@@ -2,218 +2,89 @@ import { withRequestId } from '../../_lib/with-request-id'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
-import { logger } from '@/lib/logger'
+import { getArchiveFilter, parseIncludeArchivedParam } from '../../_lib/invoice-archive'
+import { decodeCursor, encodeCursor } from '../../_lib/cursor'
 
-import {
-  findContactById,
-  softDeleteContact,
-  supportsContactSoftDelete,
-} from '../../_lib/contacts'
+async function GETHandler(request: NextRequest) {
+  const authToken = request.headers.get('authorization')?.replace('Bearer ', '')
+  const claims = await verifyAuthToken(authToken || '')
+  if (!claims) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-/**
- * AUTH HELPER
- */
-async function getAuthenticatedUser(request: NextRequest) {
-  const authToken = request.headers
-    .get('authorization')
-    ?.replace('Bearer ', '')
+  const user = await prisma.user.findUnique({ where: { privyId: claims.userId } })
+  if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
 
-  if (!authToken) return null
+  const { searchParams } = new URL(request.url)
+  const includeArchived = parseIncludeArchivedParam(searchParams.get('includeArchived'))
 
-  const claims = await verifyAuthToken(authToken)
+  const limit = Math.min(
+    100,
+    Math.max(1, Number.parseInt(searchParams.get('limit') || '25', 10) || 25),
+  )
 
-  if (!claims) return null
+  const cursorParam = searchParams.get('cursor')
+  const decodedCursor = cursorParam ? decodeCursor(cursorParam) : null
 
-  return prisma.user.findUnique({
-    where: { privyId: claims.userId },
+  if (cursorParam && !decodedCursor) {
+    return NextResponse.json({ error: 'Invalid cursor' }, { status: 400 })
+  }
+
+  const now = new Date()
+
+  const where = {
+    userId: user.id,
+    status: 'pending',
+    dueDate: { lt: now, not: null },
+    ...getArchiveFilter(includeArchived),
+    ...(decodedCursor
+      ? {
+          OR: [
+            { createdAt: { lt: new Date(decodedCursor.createdAt) } },
+            {
+              AND: [
+                { createdAt: new Date(decodedCursor.createdAt) },
+                { id: { lt: decodedCursor.id } },
+              ],
+            },
+          ],
+        }
+      : {}),
+  }
+
+  const invoices = await prisma.invoice.findMany({
+    where,
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: limit + 1,
+    select: {
+      id: true,
+      invoiceNumber: true,
+      clientName: true,
+      amount: true,
+      currency: true,
+      dueDate: true,
+      createdAt: true,
+    },
+  })
+
+  const hasNext = invoices.length > limit
+  const page = hasNext ? invoices.slice(0, limit) : invoices
+  const last = page[page.length - 1]
+
+  return NextResponse.json({
+    invoices: page.map((invoice) => ({
+      ...invoice,
+      amount: Number(invoice.amount),
+      daysOverdue: Math.floor(
+        (now.getTime() - invoice.dueDate!.getTime()) / (1000 * 60 * 60 * 24)
+      ),
+    })),
+    nextCursor:
+      hasNext && last
+        ? encodeCursor({
+            createdAt: last.createdAt.toISOString(),
+            id: last.id,
+          })
+        : null,
   })
 }
 
-/**
- * GET CONTACT
- */
-async function GETHandler(
-  request: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  let contactId: string | undefined
-
-  try {
-    const user = await getAuthenticatedUser(request)
-
-    if (!user) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      )
-    }
-
-    const { id } = params
-    contactId = id
-
-    const contact = await findContactById({
-      id,
-      userId: user.id,
-      includeDeleted: false,
-    })
-
-    if (!contact) {
-      return NextResponse.json(
-        { error: 'Contact not found' },
-        { status: 404 }
-      )
-    }
-
-    return NextResponse.json({ contact }, { status: 200 })
-  } catch (error) {
-    logger.error({ err: error, contactId }, 'GET contact error')
-
-    return NextResponse.json(
-      { error: 'Failed to fetch contact' },
-      { status: 500 }
-    )
-  }
-}
-
-/**
- * PATCH CONTACT
- */
-async function PATCHHandler(
-  request: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  let contactId: string | undefined
-
-  try {
-    const user = await getAuthenticatedUser(request)
-
-    if (!user) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      )
-    }
-
-    const { id } = params
-    contactId = id
-
-    const contact = await findContactById({
-      id,
-      userId: user.id,
-      includeDeleted: false,
-    })
-
-    if (!contact) {
-      return NextResponse.json(
-        { error: 'Contact not found' },
-        { status: 404 }
-      )
-    }
-
-    const body = await request.json()
-
-    const updated = await prisma.contact.update({
-      where: { id },
-      data: {
-        name:
-          typeof body.name === 'string'
-            ? body.name.trim()
-            : undefined,
-
-        email:
-          typeof body.email === 'string'
-            ? body.email.trim().toLowerCase()
-            : undefined,
-
-        company:
-          typeof body.company === 'string'
-            ? body.company.trim()
-            : null,
-
-        notes:
-          typeof body.notes === 'string'
-            ? body.notes.trim()
-            : null,
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        updatedAt: true,
-      },
-    })
-
-    return NextResponse.json(
-      { contact: updated },
-      { status: 200 }
-    )
-  } catch (error) {
-    logger.error({ err: error, contactId }, 'PATCH contact error')
-
-    return NextResponse.json(
-      { error: 'Failed to update contact' },
-      { status: 500 }
-    )
-  }
-}
-
-/**
- * DELETE CONTACT
- */
-async function DELETEHandler(
-  request: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  let contactId: string | undefined
-
-  try {
-    const user = await getAuthenticatedUser(request)
-
-    if (!user) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      )
-    }
-
-    const { id } = params
-    contactId = id
-
-    const supported = await supportsContactSoftDelete()
-
-    if (!supported) {
-      return NextResponse.json(
-        { error: 'Soft delete not supported' },
-        { status: 409 }
-      )
-    }
-
-    const deleted = await softDeleteContact({
-      id,
-      userId: user.id,
-    })
-
-    if (!deleted) {
-      return NextResponse.json(
-        { error: 'Contact not found' },
-        { status: 404 }
-      )
-    }
-
-    return NextResponse.json({ contact: deleted }, { status: 200 })
-  } catch (error) {
-    logger.error({ err: error, contactId }, 'DELETE contact error')
-
-    return NextResponse.json(
-      { error: 'Failed to delete contact' },
-      { status: 500 }
-    )
-  }
-}
-
-/**
- * EXPORT ROUTES
- */
 export const GET = withRequestId(GETHandler)
-export const PATCH = withRequestId(PATCHHandler)
-export const DELETE = withRequestId(DELETEHandler)

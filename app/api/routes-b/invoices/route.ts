@@ -238,7 +238,7 @@ async function GETHandler(request: NextRequest) {
       amount: Number(i.amount),
     })),
 
-    nextCursor: last
+    nextCursor: hasNext && last
       ? encodeCursor({
           createdAt: last.createdAt.toISOString(),
           id: last.id,
