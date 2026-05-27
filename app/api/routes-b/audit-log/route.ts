@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
 import { buildActionFilter } from '../_lib/audit-action-filter' // Issue #621
 import { getSeverity, buildSeverityFilter } from '../_lib/audit-severity'
+import { parseAuditFilters } from '../_lib/audit-filters'
 
 async function GETHandler(request: NextRequest) {
   const authToken = request.headers.get('authorization')?.replace('Bearer ', '')
@@ -27,11 +28,21 @@ async function GETHandler(request: NextRequest) {
     return NextResponse.json({ error: actionFilter.error }, { status: 400 })
   }
 
+  // Date range and actor filters
+  const auditFilters = parseAuditFilters(searchParams)
+  if (!auditFilters.ok) {
+    return NextResponse.json({ error: auditFilters.error }, { status: 400 })
+  }
+
   const severity = searchParams.get('severity')
   const severityFilter = buildSeverityFilter(severity)
 
   const where = {
-    actorId: user.id,
+    actorId: auditFilters.value.actor ? auditFilters.value.actor : user.id,
+    createdAt: {
+      gte: auditFilters.value.from,
+      lte: auditFilters.value.to,
+    },
     ...actionFilter.clause,
     ...severityFilter,
   }
