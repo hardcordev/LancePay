@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
+import { createRouteLogger } from '../_shared/logger'
 
 const MAX_BANK_NAME_LENGTH = 100
 const MAX_ACCOUNT_NAME_LENGTH = 100
@@ -32,31 +33,38 @@ function maskAccountNumber(accountNumber: string) {
 }
 
 export async function GET(request: NextRequest) {
+  const routeLogger = createRouteLogger({ route: '/api/routes-d/bank-accounts' })
+
   const userId = await getAuthenticatedUserId(request)
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const bankAccounts = await prisma.bankAccount.findMany({
-    where: { userId },
-    orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
-    select: {
-      id: true,
-      bankName: true,
-      bankCode: true,
-      accountNumber: true,
-      accountName: true,
-      isDefault: true,
-      createdAt: true,
-    },
-  })
+  try {
+    const bankAccounts = await prisma.bankAccount.findMany({
+      where: { userId },
+      orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+      select: {
+        id: true,
+        bankName: true,
+        bankCode: true,
+        accountNumber: true,
+        accountName: true,
+        isDefault: true,
+        createdAt: true,
+      },
+    })
 
-  return NextResponse.json({
-    bankAccounts: bankAccounts.map((bankAccount: (typeof bankAccounts)[number]) => ({
-      ...bankAccount,
-      accountNumber: maskAccountNumber(bankAccount.accountNumber),
-    })),
-  })
+    return NextResponse.json({
+      bankAccounts: bankAccounts.map((bankAccount: (typeof bankAccounts)[number]) => ({
+        ...bankAccount,
+        accountNumber: maskAccountNumber(bankAccount.accountNumber),
+      })),
+    })
+  } catch (error) {
+    routeLogger.error({ err: error }, 'Failed to list bank accounts')
+    return NextResponse.json({ error: 'Failed to list bank accounts' }, { status: 500 })
+  }
 }
 
 type CreateBankAccountBody = {
@@ -67,24 +75,26 @@ type CreateBankAccountBody = {
   isDefault?: unknown
 }
 
-function parseRequiredString(value: unknown, field: string, maxLength: number) {
+function parseRequiredString(value: unknown, field: string, maxLength: number): string | Error {
   if (typeof value !== 'string') {
-    return `${field} is required`
+    return new Error(`${field} is required`)
   }
 
   const trimmed = value.trim()
   if (!trimmed) {
-    return `${field} is required`
+    return new Error(`${field} is required`)
   }
 
   if (trimmed.length > maxLength) {
-    return `${field} must be at most ${maxLength} characters`
+    return new Error(`${field} must be at most ${maxLength} characters`)
   }
 
   return trimmed
 }
 
 export async function POST(request: NextRequest) {
+  const routeLogger = createRouteLogger({ route: '/api/routes-d/bank-accounts' })
+
   const userId = await getAuthenticatedUserId(request)
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -99,12 +109,12 @@ export async function POST(request: NextRequest) {
 
   const bankName = parseRequiredString(body.bankName, 'bankName', MAX_BANK_NAME_LENGTH)
   if (typeof bankName !== 'string') {
-    return NextResponse.json({ error: bankName }, { status: 400 })
+    return NextResponse.json({ error: bankName.message }, { status: 400 })
   }
 
   const bankCode = parseRequiredString(body.bankCode, 'bankCode', 10)
   if (typeof bankCode !== 'string') {
-    return NextResponse.json({ error: bankCode }, { status: 400 })
+    return NextResponse.json({ error: bankCode.message }, { status: 400 })
   }
 
   if (!BANK_CODE_PATTERN.test(bankCode)) {
@@ -116,7 +126,7 @@ export async function POST(request: NextRequest) {
 
   const accountNumber = parseRequiredString(body.accountNumber, 'accountNumber', 10)
   if (typeof accountNumber !== 'string') {
-    return NextResponse.json({ error: accountNumber }, { status: 400 })
+    return NextResponse.json({ error: accountNumber.message }, { status: 400 })
   }
 
   if (!ACCOUNT_NUMBER_PATTERN.test(accountNumber)) {
@@ -132,57 +142,62 @@ export async function POST(request: NextRequest) {
     MAX_ACCOUNT_NAME_LENGTH,
   )
   if (typeof accountName !== 'string') {
-    return NextResponse.json({ error: accountName }, { status: 400 })
+    return NextResponse.json({ error: accountName.message }, { status: 400 })
   }
 
   if (body.isDefault !== undefined && typeof body.isDefault !== 'boolean') {
     return NextResponse.json({ error: 'isDefault must be a boolean' }, { status: 400 })
   }
 
-  const existingAccountCount = await prisma.bankAccount.count({
-    where: { userId },
-  })
-
-  const isFirstAccount = existingAccountCount === 0
-  const shouldBeDefault = isFirstAccount || body.isDefault === true
-
-  if (body.isDefault === true) {
-    await prisma.bankAccount.updateMany({
-      where: { userId, isDefault: true },
-      data: { isDefault: false },
+  try {
+    const existingAccountCount = await prisma.bankAccount.count({
+      where: { userId },
     })
+
+    const isFirstAccount = existingAccountCount === 0
+    const shouldBeDefault = isFirstAccount || body.isDefault === true
+
+    if (body.isDefault === true) {
+      await prisma.bankAccount.updateMany({
+        where: { userId, isDefault: true },
+        data: { isDefault: false },
+      })
+    }
+
+    const bankAccount = await prisma.bankAccount.create({
+      data: {
+        userId,
+        bankName,
+        bankCode,
+        accountNumber,
+        accountName,
+        isDefault: shouldBeDefault,
+      },
+      select: {
+        id: true,
+        bankName: true,
+        bankCode: true,
+        accountNumber: true,
+        accountName: true,
+        isDefault: true,
+        createdAt: true,
+      },
+    })
+
+    return NextResponse.json(
+      {
+        id: bankAccount.id,
+        bankName: bankAccount.bankName,
+        bankCode: bankAccount.bankCode,
+        accountNumber: bankAccount.accountNumber,
+        accountName: bankAccount.accountName,
+        isDefault: bankAccount.isDefault,
+        createdAt: bankAccount.createdAt,
+      },
+      { status: 201 },
+    )
+  } catch (error) {
+    routeLogger.error({ err: error }, 'Failed to create bank account')
+    return NextResponse.json({ error: 'Failed to create bank account' }, { status: 500 })
   }
-
-  const bankAccount = await prisma.bankAccount.create({
-    data: {
-      userId,
-      bankName,
-      bankCode,
-      accountNumber,
-      accountName,
-      isDefault: shouldBeDefault,
-    },
-    select: {
-      id: true,
-      bankName: true,
-      bankCode: true,
-      accountNumber: true,
-      accountName: true,
-      isDefault: true,
-      createdAt: true,
-    },
-  })
-
-  return NextResponse.json(
-    {
-      id: bankAccount.id,
-      bankName: bankAccount.bankName,
-      bankCode: bankAccount.bankCode,
-      accountNumber: bankAccount.accountNumber,
-      accountName: bankAccount.accountName,
-      isDefault: bankAccount.isDefault,
-      createdAt: bankAccount.createdAt,
-    },
-    { status: 201 },
-  )
 }
