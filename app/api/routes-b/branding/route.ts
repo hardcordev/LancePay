@@ -7,6 +7,7 @@ import { logger } from '@/lib/logger'
 import { registerRoute } from '../_lib/openapi'
 import { hasTableColumn } from '../_lib/table-columns'
 import { brandingSchema, type BrandingPayload } from './schema'
+import { errorResponse } from '../_lib/errors'
 import { z } from 'zod'
 
 // Register OpenAPI documentation
@@ -111,27 +112,28 @@ async function writeBranding(request: NextRequest) {
   try {
     const user = await getAuthenticatedUser(request)
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return errorResponse('UNAUTHORIZED', 'Unauthorized', {}, 401)
     }
 
     let body: unknown
     try {
       body = await request.json()
     } catch {
-      return NextResponse.json(
-        { error: 'Invalid request body', fields: { body: 'Invalid JSON' } },
-        { status: 422 }
+      return errorResponse(
+        'BAD_REQUEST',
+        'Invalid request body',
+        { fields: { body: 'Invalid JSON' } },
+        422
       )
     }
 
     const parsed = brandingSchema.safeParse(body)
     if (!parsed.success) {
-      return NextResponse.json(
-        {
-          error: 'Invalid branding payload',
-          fields: formatFieldErrors(parsed.error),
-        },
-        { status: 422 }
+      return errorResponse(
+        'BAD_REQUEST',
+        'Invalid branding payload',
+        { fields: formatFieldErrors(parsed.error) },
+        422
       )
     }
 
@@ -168,10 +170,7 @@ async function writeBranding(request: NextRequest) {
     })
   } catch (error) {
     logger.error({ err: error }, 'branding update error')
-    return NextResponse.json(
-      { error: 'Failed to update branding settings' },
-      { status: 500 }
-    )
+    return errorResponse('INTERNAL', 'Failed to update branding settings', {}, 500)
   }
 }
 
@@ -188,7 +187,7 @@ export const PATCH = withRequestId(
 async function GETHandler(request: NextRequest) {
   const user = await getAuthenticatedUser(request)
   if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    return errorResponse('UNAUTHORIZED', 'Unauthorized', {}, 401)
   }
 
   const branding = await prisma.brandingSettings.findUnique({
