@@ -1,4 +1,3 @@
-import crypto from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
@@ -116,8 +115,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Auto-generate signing secret
-    const signingSecret = crypto.randomBytes(32).toString('hex')
+    const signingSecret = generateWebhookSecret()
 
     const webhook = await prisma.userWebhook.create({
       data: {

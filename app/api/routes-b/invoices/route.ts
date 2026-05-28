@@ -13,6 +13,7 @@ import {
 
 import { decodeCursor, encodeCursor } from '../_lib/cursor'
 import { findRecentDuplicateInvoice } from '../_lib/duplicate-detection'
+import { emitStatsInvalidated } from '../_lib/events'
 
 import { registerRoute } from '../_lib/openapi'
 import { z } from 'zod'
@@ -338,6 +339,8 @@ async function POSTHandler(request: NextRequest) {
       dueDate: parsedDueDate,
     },
   })
+
+  emitStatsInvalidated({ userId: auth.user.id })
 
   return NextResponse.json(
     {
