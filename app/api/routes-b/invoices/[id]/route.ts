@@ -1,6 +1,11 @@
+import crypto from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
+
+function buildETag(updatedAt: Date): string {
+  return `"${crypto.createHash('md5').update(updatedAt.toISOString()).digest('hex')}"`
+}
 
 function isValidIsoDate(value: string) {
   const date = new Date(value)
@@ -47,7 +52,11 @@ export async function GET(
     return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
   }
 
-  return NextResponse.json({ ...invoice, amount: Number(invoice.amount) })
+  const etag = buildETag(invoice.updatedAt)
+  return NextResponse.json(
+    { ...invoice, amount: Number(invoice.amount) },
+    { headers: { ETag: etag } },
+  )
 }
 
 export async function PATCH(
@@ -69,7 +78,7 @@ export async function PATCH(
 
   const ownedInvoice = await prisma.invoice.findFirst({
     where: { id, userId: requester.id },
-    select: { id: true, status: true },
+    select: { id: true, status: true, updatedAt: true },
   })
 
   if (!ownedInvoice) {
@@ -87,6 +96,14 @@ export async function PATCH(
 
   if (ownedInvoice.status !== 'pending') {
     return NextResponse.json({ error: 'Only pending invoices can be edited' }, { status: 422 })
+  }
+
+  const ifMatch = request.headers.get('if-match')
+  if (ifMatch) {
+    const currentETag = buildETag(ownedInvoice.updatedAt)
+    if (ifMatch !== currentETag) {
+      return NextResponse.json({ error: 'Precondition Failed: ETag mismatch' }, { status: 412 })
+    }
   }
 
   const body = await request.json()

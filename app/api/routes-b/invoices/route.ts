@@ -14,14 +14,28 @@ export async function GET(request: NextRequest) {
   const status = searchParams.get('status')
   const page = parseInt(searchParams.get('page') || '1')
   const limit = Math.min(parseInt(searchParams.get('limit') || '20'), 50)
+  const q = searchParams.get('q')?.trim() ?? ''
 
   const validStatuses = ['pending', 'paid', 'overdue', 'cancelled']
   if (status && !validStatuses.includes(status)) {
     return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
   }
 
+  if (q && q.length < 2) {
+    return NextResponse.json({ error: 'Search query must be at least 2 characters' }, { status: 400 })
+  }
+
+  const sanitizedQ = q.replace(/[%_\\]/g, '\\$&')
+
   const where: any = { userId: user.id }
   if (status) where.status = status
+  if (sanitizedQ) {
+    where.OR = [
+      { clientName: { contains: sanitizedQ, mode: 'insensitive' } },
+      { invoiceNumber: { contains: sanitizedQ, mode: 'insensitive' } },
+      { notes: { contains: sanitizedQ, mode: 'insensitive' } },
+    ]
+  }
 
   const total = await prisma.invoice.count({ where })
   const invoices = await prisma.invoice.findMany({
