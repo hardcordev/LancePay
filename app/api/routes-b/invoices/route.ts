@@ -177,6 +177,7 @@ async function GETHandler(request: NextRequest) {
   const searchFilters = buildInvoiceWhereFilters({
     number: searchParams.get('number'),
     client: searchParams.get('client'),
+    notes: searchParams.get('notes'),
     minAmount: searchParams.get('minAmount'),
     maxAmount: searchParams.get('maxAmount'),
     currency: searchParams.get('currency'),
