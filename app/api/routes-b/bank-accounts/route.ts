@@ -1,4 +1,7 @@
+import crypto from 'node:crypto'
+
 import { withRequestId } from '../_lib/with-request-id'
+import { withMethods } from '../_lib/with-methods'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
@@ -6,6 +9,13 @@ import { validateIBAN } from '../_lib/iban'
 import { validateSWIFT } from '../_lib/swift'
 import { bankAccountDisplayName } from '../_lib/bank-accounts'
 import { normalizeString } from '../_lib/normalize'
+
+import {
+  getIdempotentResponse,
+  setIdempotentResponse,
+} from '../_lib/idempotency'
+
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000
 
 function isValidDigits(value: string, min: number, max: number) {
   const pattern = new RegExp(`^\\d{${min},${max}}$`)
@@ -63,6 +73,26 @@ async function POSTHandler(request: NextRequest) {
   const body = await request.json()
   const { bankName, bankCode, accountNumber, accountName, iban, swift, nickname } = body ?? {}
 
+  const idempotencyKey = request.headers.get('idempotency-key')
+  const bodyHash = idempotencyKey ? crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex') : ''
+
+  if (idempotencyKey) {
+    const cached = getIdempotentResponse(idempotencyKey)
+
+    if (cached) {
+      if (cached.bodyHash !== bodyHash) {
+        return NextResponse.json(
+          { error: 'Idempotency-Key conflict' },
+          { status: 409 }
+        )
+      }
+
+      return NextResponse.json(
+        cached.body,
+        { status: cached.status }
+      )
+    }
+  }
   const normalizedBankName = typeof bankName === 'string' ? normalizeString(bankName) : ''
   const normalizedAccountName = typeof accountName === 'string' ? normalizeString(accountName) : ''
 
@@ -144,11 +174,27 @@ async function POSTHandler(request: NextRequest) {
     },
   })
 
+  const responseBody = { ...bankAccount, displayName: bankAccountDisplayName(bankAccount) }
+
+  if (idempotencyKey) {
+    setIdempotentResponse(
+      idempotencyKey,
+      {
+        bodyHash,
+        status: 201,
+        body: responseBody,
+      },
+      IDEMPOTENCY_TTL_MS
+    )
+  }
+
   return NextResponse.json(
-    { ...bankAccount, displayName: bankAccountDisplayName(bankAccount) },
+    responseBody,
     { status: 201 },
   )
 }
 
-export const GET = withRequestId(GETHandler)
-export const POST = withRequestId(POSTHandler)
+export const { GET, POST } = withMethods({
+  GET: withRequestId(GETHandler),
+  POST: withRequestId(POSTHandler),
+})

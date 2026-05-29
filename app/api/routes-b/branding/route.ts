@@ -1,5 +1,6 @@
 import { withRequestId } from '../_lib/with-request-id'
 import { withBodyLimit } from '../_lib/with-body-limit'
+import { withMethods } from '../_lib/with-methods'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
@@ -14,6 +15,28 @@ import { validateLogoUrl } from '../_lib/logo-validation'
 import { z } from 'zod'
 
 // Register OpenAPI documentation
+registerRoute({
+  method: 'GET',
+  path: '/branding',
+  summary: 'Get branding settings',
+  description: 'Get the authenticated user\'s branding settings.',
+  responseSchema: z.object({
+    branding: z.object({
+      id: z.string(),
+      userId: z.string(),
+      logoUrl: z.string().nullable(),
+      primaryColor: z.string().nullable(),
+      footerText: z.string().nullable(),
+      signatureUrl: z.string().nullable(),
+      createdAt: z.string(),
+      secondaryColor: z.string().nullable().optional(),
+      customDomain: z.string().nullable().optional(),
+      accentColor: z.string().nullable().optional(),
+    }).nullable(),
+  }),
+  tags: ['branding'],
+})
+
 registerRoute({
   method: 'PATCH',
   path: '/branding',
@@ -35,7 +58,6 @@ registerRoute({
       footerText: z.string().nullable(),
       signatureUrl: z.string().nullable(),
       createdAt: z.string(),
-      updatedAt: z.string(),
     }),
   }),
   tags: ['branding'],
@@ -189,35 +211,39 @@ async function writeBranding(request: NextRequest) {
   }
 }
 
+// GET /api/routes-b/branding — return the authenticated user's branding
+// settings, or { branding: null } (200, not 404) when none has been set up.
+async function GETHandler(request: NextRequest) {
+  try {
+    const user = await getAuthenticatedUser(request)
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const branding = await prisma.brandingSettings.findUnique({
+      where: { userId: user.id },
+      select: {
+        id: true,
+        logoUrl: true,
+        primaryColor: true,
+        footerText: true,
+        signatureUrl: true,
+        createdAt: true,
+      },
+    })
+
+    return NextResponse.json({ branding: branding ?? null })
+  } catch (error) {
+    log.error({ err: error }, 'branding GET error')
+    return NextResponse.json({ error: 'Failed to get branding' }, { status: 500 })
+  }
+}
+
 async function PATCHHandler(request: NextRequest) {
   return writeBranding(request)
 }
 
-export const PATCH = withRequestId(
-  withBodyLimit(PATCHHandler, { limitBytes: 1024 * 1024 })
-)
-
-// GET /api/routes-b/branding — return the authenticated user's branding
-// settings, or { branding: null } (200, not 404) when none has been set up.
-async function GETHandler(request: NextRequest) {
-  const user = await getAuthenticatedUser(request)
-  if (!user) {
-    return errorResponse('UNAUTHORIZED', 'Unauthorized', {}, 401)
-  }
-
-  const branding = await prisma.brandingSettings.findUnique({
-    where: { userId: user.id },
-    select: {
-      id: true,
-      logoUrl: true,
-      primaryColor: true,
-      footerText: true,
-      signatureUrl: true,
-      createdAt: true,
-    },
-  })
-
-  return NextResponse.json({ branding: branding ?? null })
-}
-
-export const GET = withRequestId(GETHandler)
+export const { GET, POST, PUT, DELETE, PATCH } = withMethods({
+  GET: withRequestId(GETHandler),
+  PATCH: withRequestId(withBodyLimit(PATCHHandler, { limitBytes: 1024 * 1024 })),
+})

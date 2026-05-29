@@ -1,4 +1,5 @@
 import { withRequestId } from '../_lib/with-request-id'
+import { withMethods } from '../_lib/with-methods'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
@@ -45,4 +46,6 @@ async function GETHandler(request: NextRequest) {
   }
 }
 
-export const GET = withRequestId(GETHandler)
+export const { GET } = withMethods({
+  GET: withRequestId(GETHandler),
+})
