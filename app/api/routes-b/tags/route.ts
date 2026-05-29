@@ -3,6 +3,7 @@ import { withBodyLimit } from '../_lib/with-body-limit'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { verifyAuthToken } from '@/lib/auth'
+import { normalizeString } from '../_lib/normalize'
 
 import { registerRoute } from '../_lib/openapi'
 import { z } from 'zod'
@@ -141,7 +142,7 @@ async function POSTHandler(request: NextRequest) {
 
   const name =
     typeof body.name === 'string'
-      ? body.name.trim()
+      ? normalizeString(body.name)
       : ''
 
   const color =
