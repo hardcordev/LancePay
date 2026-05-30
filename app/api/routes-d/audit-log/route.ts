@@ -44,7 +44,8 @@ export async function GET(request: NextRequest) {
     if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
 
     const { searchParams } = new URL(request.url)
-    const limit = Math.min(parseInt(searchParams.get('limit') || '20'), 100)
+    const rawLimit = parseInt(searchParams.get('limit') || '20', 10)
+    const limit = Math.min(isNaN(rawLimit) || rawLimit <= 0 ? 20 : rawLimit, 100)
     const action = searchParams.get('action')
 
     const parsedFilters = parseAuditFilters(searchParams)
