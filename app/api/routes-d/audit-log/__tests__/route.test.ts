@@ -64,13 +64,13 @@ describe('GET /api/routes-d/audit-log', () => {
     expect(mockedAuditFindMany).not.toHaveBeenCalled()
   })
 
-  it('applies actor filter and date range', async () => {
-    await GET(makeRequest('?from=2026-04-01T00:00:00.000Z&to=2026-04-02T00:00:00.000Z&actor=user-2'))
+  it('always filters by the authenticated user regardless of actor param', async () => {
+    await GET(makeRequest('?from=2026-04-01T00:00:00.000Z&to=2026-04-02T00:00:00.000Z&actor=other-user'))
 
     expect(mockedAuditFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          actorId: 'user-2',
+          actorId: 'user-1',
           createdAt: {
             gte: new Date('2026-04-01T00:00:00.000Z'),
             lte: new Date('2026-04-02T00:00:00.000Z'),

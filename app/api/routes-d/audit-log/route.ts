@@ -10,7 +10,6 @@ const DEFAULT_DATE_RANGE_DAYS = 90
 function parseAuditFilters(searchParams: URLSearchParams) {
   const fromParam = searchParams.get('from')
   const toParam = searchParams.get('to')
-  const actor = searchParams.get('actor') || undefined
 
   const now = new Date()
   const from = fromParam ? new Date(fromParam) : new Date(now.getTime() - DEFAULT_DATE_RANGE_DAYS * 24 * 60 * 60 * 1000)
@@ -31,7 +30,7 @@ function parseAuditFilters(searchParams: URLSearchParams) {
     return { ok: false, error: `date range cannot exceed ${MAX_DATE_RANGE_DAYS} days` as const }
   }
 
-  return { ok: true, value: { from, to, actor } }
+  return { ok: true, value: { from, to } }
 }
 
 export async function GET(request: NextRequest) {
@@ -55,7 +54,7 @@ export async function GET(request: NextRequest) {
 
     const events = await prisma.auditEvent.findMany({
       where: {
-        actorId: parsedFilters.value.actor ? parsedFilters.value.actor : user.id,
+        actorId: user.id,
         ...(action ? { eventType: action } : {}),
         createdAt: {
           gte: parsedFilters.value.from,
